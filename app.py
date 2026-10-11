@@ -48,7 +48,7 @@ with gr.Blocks(title="Document Assistant - GPT-2 RAG") as demo:
 
 # Mount Gradio onto our FastAPI application at '/gradio'
 # This leaves the custom enterprise UI at '/' and all API routes untouched!
-app = gr.mount_gradio_app(app, demo, path="/gradio", ssr_mode=False)
+app = gr.mount_gradio_app(app, demo, path="/gradio")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7860"))

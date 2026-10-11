@@ -33,10 +33,14 @@ from rag.chunking import chunk_text
 
 # PyMuPDF for PDF text extraction
 try:
-    import fitz
-    HAS_FITZ = True
+    import pymupdf
+    HAS_PYMUPDF = True
 except ImportError:
-    HAS_FITZ = False
+    try:
+        import fitz as pymupdf
+        HAS_PYMUPDF = True
+    except ImportError:
+        HAS_PYMUPDF = False
 
 # FAISS and SentenceTransformer
 from sentence_transformers import SentenceTransformer
@@ -396,10 +400,10 @@ class RAGEngine:
         """Extracts text from txt, md, pdf, json, py, csv."""
         ext = os.path.splitext(filename)[1].lower()
         if ext == ".pdf":
-            if not HAS_FITZ:
-                return "[Error: PyMuPDF (fitz) is not installed to read PDFs]"
+            if not HAS_PYMUPDF:
+                return "[Error: PyMuPDF is not installed to read PDFs]"
             try:
-                doc = fitz.open(stream=content_bytes, filetype="pdf")
+                doc = pymupdf.open(stream=content_bytes, filetype="pdf")
                 pages = [page.get_text() for page in doc]
                 return "\n".join(pages)
             except Exception as e:
