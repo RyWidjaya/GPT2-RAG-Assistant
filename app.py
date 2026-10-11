@@ -46,6 +46,9 @@ with gr.Blocks(title="Document Assistant - GPT-2 RAG") as demo:
     btn_submit = gr.Button("Query RAG Assistant", variant="primary")
     btn_submit.click(fn=ask_rag, inputs=q_in, outputs=ans_out)
 
+# Enable queueing (strictly required for ZeroGPU event dispatch and lifecycle)
+demo.queue()
+
 # Mount Gradio onto our FastAPI application at '/gradio'
 # This leaves the custom enterprise UI at '/' and all API routes untouched!
 app = gr.mount_gradio_app(app, demo, path="/gradio")
