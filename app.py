@@ -1,20 +1,13 @@
-"""
-Entrypoint for Hugging Face Gradio Space.
-Mounts Gradio SDK compatibility onto the FastAPI application and serves
-the custom enterprise frontend UI at '/' and '/static' on port 7860.
-"""
+# ZeroGPU integration: MUST be imported before any other module (especially torch/rag_server)!
+try:
+    import spaces
+except ImportError:
+    spaces = None
 
 import os
 import uvicorn
 import gradio as gr
 from rag_server import app, engine
-
-# ZeroGPU integration: ZeroGPU requires a function bound to a Gradio component
-# to be decorated with @spaces.GPU so its supervisor registers the GPU event listener.
-try:
-    import spaces
-except ImportError:
-    spaces = None
 
 if spaces is not None:
     @spaces.GPU(duration=60)

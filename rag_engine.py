@@ -8,6 +8,11 @@ Integrates:
 - Token-by-token streaming & synchronous generation
 """
 
+try:
+    import spaces
+except ImportError:
+    pass
+
 import os
 import sys
 import time
