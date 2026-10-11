@@ -9,6 +9,15 @@ import uvicorn
 import gradio as gr
 from rag_server import app
 
+# ZeroGPU compatibility: satisfy Hugging Face ZeroGPU startup scanner if running on ZeroGPU
+try:
+    import spaces
+    @spaces.GPU(duration=30)
+    def _zerogpu_init():
+        return True
+except Exception:
+    pass
+
 # Minimal Gradio block to satisfy Hugging Face Gradio SDK detection
 with gr.Blocks(title="Document Assistant - GPT-2 RAG") as demo:
     gr.Markdown(
