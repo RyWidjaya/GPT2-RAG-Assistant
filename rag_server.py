@@ -169,7 +169,27 @@ async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(Non
         }
         yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.post("/api/context/load-local")
+async def load_local_folder(req: LocalPathRequest, x_session_id: Optional[str] = Header(None)):
+    """Loads all documents from a local folder into visitor's session store."""
+    sid = req.session_id or x_session_id or "default"
+    session = engine.get_session(sid)
+    try:
+        status = session.load_directory(req.path)
+        return {"success": True, "status": status}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/context/upload")

@@ -28,6 +28,24 @@ def is_port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
+def free_port(port: int = 8000):
+    """Frees the specified port if it is occupied by an orphaned process."""
+    if not is_port_in_use(port):
+        return
+    try:
+        import subprocess
+        output = subprocess.check_output(f"netstat -ano | findstr :{port}", shell=True).decode()
+        for line in output.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and "LISTENING" in parts:
+                pid = int(parts[-1])
+                if pid != os.getpid():
+                    print(f"[*] Port {port} is occupied by previous process (PID {pid}). Freeing port...")
+                    os.system(f"taskkill /PID {pid} /F >nul 2>&1")
+                    time.sleep(0.5)
+    except Exception:
+        pass
+
 def find_available_port(start_port: int = 8000) -> int:
     port = start_port
     while is_port_in_use(port) and port < 8100:
@@ -52,6 +70,7 @@ def wait_and_open_browser(url: str):
     webbrowser.open(url)
 
 if __name__ == "__main__":
+    free_port(8000)
     port = find_available_port(8000)
     url = f"http://127.0.0.1:{port}"
 

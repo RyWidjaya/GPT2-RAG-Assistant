@@ -30,13 +30,20 @@ from rag.chunking import chunk_text
 # PyMuPDF for PDF text extraction
 try:
     import pymupdf
+    fitz = pymupdf
     HAS_PYMUPDF = True
+    HAS_FITZ = True
 except ImportError:
     try:
-        import fitz as pymupdf
+        import fitz
+        pymupdf = fitz
         HAS_PYMUPDF = True
+        HAS_FITZ = True
     except ImportError:
         HAS_PYMUPDF = False
+        HAS_FITZ = False
+        fitz = None
+        pymupdf = None
 
 # FAISS and SentenceTransformer
 from sentence_transformers import SentenceTransformer
@@ -103,7 +110,7 @@ class EngineRetriever:
 
 class SessionContext:
     """Manages an isolated in-memory index for a visitor session."""
-    MAX_FILES = 5
+    MAX_FILES = 20
     MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
     ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
@@ -140,6 +147,29 @@ class SessionContext:
         self.chunks = all_chunks
         self.retriever = EngineRetriever(self.chunks, self.embedder) if len(self.chunks) > 0 else None
 
+    def load_directory(self, dir_path: str) -> Dict[str, Any]:
+        """Loads all supported documents from a local directory into this session."""
+        if not os.path.isdir(dir_path):
+            raise ValueError(f"Directory not found: {dir_path}")
+
+        files_to_add = []
+        for root, _, filenames in os.walk(dir_path):
+            for fname in filenames:
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in self.ALLOWED_EXTENSIONS:
+                    fpath = os.path.join(root, fname)
+                    rel_name = os.path.relpath(fpath, dir_path).replace("\\", "/")
+                    try:
+                        with open(fpath, "rb") as f:
+                            files_to_add.append((rel_name, f.read()))
+                    except Exception as e:
+                        print(f"[!] Warning reading {fpath}: {e}")
+
+        if not files_to_add:
+            raise ValueError(f"No supported text or PDF documents found in '{dir_path}'.")
+
+        return self.add_documents_from_bytes(files_to_add)
+
     def add_documents_from_bytes(self, files: List[Tuple[str, bytes]]) -> Dict[str, Any]:
         """Ingests files into the session index with strict validation."""
         self.touch()
@@ -149,8 +179,10 @@ class SessionContext:
             self.documents = []
             self.has_custom_docs = True
 
-        # Check total file count limit
-        if len(self.documents) + len(files) > self.MAX_FILES:
+        # Check total file count limit against new unique files
+        existing_ids = {d["id"] for d in self.documents}
+        new_files = [f for f in files if f[0] not in existing_ids]
+        if len(self.documents) + len(new_files) > self.MAX_FILES:
             raise ValueError(f"Limit exceeded: maximum {self.MAX_FILES} files allowed per session (currently have {len(self.documents)}).")
 
         for filename, bdata in files:
@@ -484,25 +516,10 @@ class RAGEngine:
         self.rebuild_index()
         return self.get_status()
 
-    def load_directory(self, dir_path: str) -> Dict[str, Any]:
-        """Loads all supported documents from a local directory."""
-        if not os.path.isdir(dir_path):
-            raise ValueError(f"Directory not found: {dir_path}")
-
-        files_to_add = []
-        for root, _, filenames in os.walk(dir_path):
-            for fname in filenames:
-                ext = os.path.splitext(fname)[1].lower()
-                if ext in [".txt", ".md", ".markdown", ".pdf", ".json", ".csv", ".py"]:
-                    fpath = os.path.join(root, fname)
-                    rel_name = os.path.relpath(fpath, dir_path).replace("\\", "/")
-                    try:
-                        with open(fpath, "rb") as f:
-                            files_to_add.append((rel_name, f.read()))
-                    except Exception as e:
-                        print(f"[!] Warning reading {fpath}: {e}")
-
-        return self.add_documents_from_bytes(files_to_add)
+    def load_directory(self, dir_path: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Loads all supported documents from a local directory into session context."""
+        session = self.get_session(session_id)
+        return session.load_directory(dir_path)
 
     def remove_document(self, doc_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Removes a document from the visitor's session index."""
@@ -638,6 +655,24 @@ class RAGEngine:
                     token_str = self.enc.decode([next_id])
                     yield token_str
                     idx = torch.cat((idx, torch.tensor([[next_id]], device=idx.device)), dim=1)
+
+    def generate_stream(
+        self,
+        question: str,
+        context: str,
+        max_new_tokens: int = 48,
+        temperature: float = 0.0,
+        model: Optional[str] = None,
+    ) -> Generator[str, None, None]:
+        """Streams generated tokens given question and formatted context."""
+        active_model = self.normalize_model_name(model or self.current_model_name)
+        prompt = self.format_prompt(active_model, context, question)
+        yield from self.generate(
+            model_name=active_model,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+        )
 
     def answer_question(
         self,

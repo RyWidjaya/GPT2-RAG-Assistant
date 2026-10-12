@@ -2,12 +2,17 @@
    Document Assistant — Client Logic
    ═══════════════════════════════════════════════════════════════ */
 
-document.addEventListener('DOMContentLoaded', () => {
-    // ── Session & State ──
-    let sessionId = sessionStorage.getItem('rag_session_id');
-    if (!sessionId) {
+function init() {
+    // ── Session & State (Safe from Storage Restriction errors) ──
+    let sessionId = 'default';
+    try {
+        sessionId = sessionStorage.getItem('rag_session_id');
+        if (!sessionId) {
+            sessionId = 'sess_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
+            sessionStorage.setItem('rag_session_id', sessionId);
+        }
+    } catch (e) {
         sessionId = 'sess_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
-        sessionStorage.setItem('rag_session_id', sessionId);
     }
 
     const state = {
@@ -61,6 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function setupDropdown(dropdown, trigger, menu, onSelect) {
         if (!dropdown || !trigger || !menu) return;
         trigger.addEventListener('click', evt => {
+            evt.preventDefault();
             evt.stopPropagation();
             document.querySelectorAll('.dropdown.open').forEach(d => {
                 if (d !== dropdown) d.classList.remove('open');
@@ -68,7 +74,9 @@ document.addEventListener('DOMContentLoaded', () => {
             dropdown.classList.toggle('open');
         });
         menu.querySelectorAll('.dropdown-item').forEach(item => {
-            item.addEventListener('click', () => {
+            item.addEventListener('click', evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
                 menu.querySelectorAll('.dropdown-item').forEach(i => i.classList.remove('active'));
                 item.classList.add('active');
                 dropdown.classList.remove('open');
@@ -115,6 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (btnAddFiles && fileInput) {
         btnAddFiles.addEventListener('click', evt => {
+            evt.preventDefault();
             evt.stopPropagation();
             fileInput.click();
         });
@@ -122,6 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (btnBrowse && fileInput) {
         btnBrowse.addEventListener('click', evt => {
+            evt.preventDefault();
             evt.stopPropagation();
             fileInput.click();
         });
@@ -160,7 +170,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const collected = [];
 
-            // Traverse file system entries if available
             async function walk(entry) {
                 if (!entry) return;
                 if (entry.isFile && typeof entry.file === 'function') {
@@ -252,10 +261,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Index local folder button
     if (btnIndexPath && localPathInput) {
-        btnIndexPath.addEventListener('click', async () => {
+        btnIndexPath.addEventListener('click', async evt => {
+            evt.preventDefault();
             const p = localPathInput.value.trim();
             if (!p) return;
+            const origText = btnIndexPath.textContent;
+            btnIndexPath.textContent = 'Indexing...';
+            btnIndexPath.disabled = true;
             try {
                 const res = await fetch('/api/context/load-local', {
                     method: 'POST',
@@ -263,21 +277,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ path: p, session_id: state.sessionId })
                 });
                 const data = await res.json();
-                if (data.success) await sync();
+                if (res.ok && data.success) {
+                    await sync();
+                } else {
+                    alert(data.detail || 'Failed to index folder.');
+                }
             } catch (err) {
                 console.error(err);
+                alert('Error indexing folder: ' + err.message);
+            } finally {
+                btnIndexPath.textContent = origText;
+                btnIndexPath.disabled = false;
             }
         });
     }
 
+    // Clear KB button
     if (btnClearKb) {
-        btnClearKb.addEventListener('click', async () => {
+        btnClearKb.addEventListener('click', async evt => {
+            evt.preventDefault();
             if (!confirm('Remove all documents from your session?')) return;
-            await fetch('/api/context/clear', {
-                method: 'DELETE',
-                headers: { 'X-Session-ID': state.sessionId }
-            });
-            await sync();
+            try {
+                await fetch('/api/context/clear', {
+                    method: 'DELETE',
+                    headers: { 'X-Session-ID': state.sessionId }
+                });
+                await sync();
+            } catch (err) {
+                console.error(err);
+            }
         });
     }
 
@@ -287,6 +315,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/status', {
                 headers: { 'X-Session-ID': state.sessionId }
             });
+            if (!res.ok) return;
             const d = await res.json();
             if (deviceLabel && d.device) {
                 deviceLabel.textContent = d.device.toUpperCase();
@@ -296,7 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             renderKbTable(d.documents);
         } catch (err) {
-            console.error(err);
+            console.error('Status sync error:', err);
         }
     }
 
@@ -323,7 +352,8 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
             const removeBtn = row.querySelector('.kb-row-remove');
             if (removeBtn) {
-                removeBtn.addEventListener('click', async () => {
+                removeBtn.addEventListener('click', async evt => {
+                    evt.stopPropagation();
                     await fetch(`/api/context/document/${encodeURIComponent(doc.id)}`, {
                         method: 'DELETE',
                         headers: { 'X-Session-ID': state.sessionId }
@@ -344,13 +374,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ model: key })
             });
         } catch (err) {
-            console.error(err);
+            console.error('Model switch error:', err);
         }
     }
 
     // ══════════ NEW CHAT ══════════
     if (btnNewChat && messages && emptyState) {
-        btnNewChat.addEventListener('click', () => {
+        btnNewChat.addEventListener('click', evt => {
+            evt.preventDefault();
             messages.innerHTML = '';
             emptyState.style.display = 'flex';
         });
@@ -358,10 +389,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ══════════ STARTERS ══════════
     document.querySelectorAll('.starter').forEach(s => {
-        s.addEventListener('click', () => {
+        s.addEventListener('click', evt => {
+            evt.preventDefault();
             const btn = /** @type {HTMLElement} */ (s);
-            if (input && btn.dataset.q) {
-                input.value = btn.dataset.q;
+            const q = btn.dataset.q || btn.textContent.trim();
+            if (input && q) {
+                input.value = q;
                 send();
             }
         });
@@ -381,10 +414,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     if (btnSend) {
-        btnSend.addEventListener('click', send);
+        btnSend.addEventListener('click', evt => {
+            evt.preventDefault();
+            send();
+        });
     }
 
-    // ══════════ SEND & STREAM ══════════
+    // ══════════ SEND & STREAM (WITH AUTOMATIC FALLBACK) ══════════
     async function send() {
         if (!input || !messages || !emptyState) return;
         const q = input.value.trim();
@@ -434,6 +470,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.abort = new AbortController();
 
         try {
+            // Attempt SSE Stream first
             const res = await fetch('/api/chat/stream', {
                 method: 'POST',
                 headers: {
@@ -453,28 +490,29 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (!res.ok || !res.body) {
-                const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || `Server returned status ${res.status}`);
+                throw new Error(`Stream HTTP ${res.status}`);
             }
 
             const reader = res.body.getReader();
             const dec = new TextDecoder();
             let buf = '';
-            let evtType = '';
+            let evtType = 'token';
             let full = '';
 
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
                 buf += dec.decode(value, { stream: true });
-                const lines = buf.split('\n');
+                const lines = buf.split(/\r?\n/);
                 buf = lines.pop() || '';
 
                 for (const line of lines) {
-                    if (line.startsWith('event:')) {
-                        evtType = line.slice(6).trim();
-                    } else if (line.startsWith('data:')) {
-                        const raw = line.slice(5).trim();
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+                    if (trimmed.startsWith('event:')) {
+                        evtType = trimmed.slice(6).trim();
+                    } else if (trimmed.startsWith('data:')) {
+                        const raw = trimmed.slice(5).trim();
                         if (!raw) continue;
                         try {
                             const d = JSON.parse(raw);
@@ -492,18 +530,43 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (latEl) latEl.textContent = `${d.total_ms}ms · ${d.token_count} tokens`;
                             }
                         } catch (parseErr) {
-                            console.error(parseErr);
+                            console.error('Parse error:', parseErr);
                         }
                     }
                 }
             }
+
             if (textEl) {
-                if (!full.trim()) textEl.textContent = '(No answer generated)';
-                else textEl.textContent = full;
+                textEl.textContent = full || '(No answer generated)';
             }
-        } catch (err) {
-            if (textEl) {
-                textEl.textContent = err.name === 'AbortError' ? '(Cancelled)' : `[Error: ${err.message}]`;
+        } catch (streamErr) {
+            console.warn('Streaming error, falling back to synchronous /api/chat:', streamErr);
+            // Fallback to /api/chat
+            try {
+                const fbRes = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Session-ID': state.sessionId
+                    },
+                    body: JSON.stringify({
+                        question: q,
+                        method: state.method,
+                        k: state.k,
+                        max_context_tokens: state.maxCtx,
+                        max_new_tokens: state.maxGen,
+                        model: state.model,
+                        session_id: state.sessionId,
+                    }),
+                });
+                const fbData = await fbRes.json();
+                if (textEl) textEl.textContent = fbData.answer || '(No answer generated)';
+                if (latEl && fbData.total_ms) latEl.textContent = `${fbData.total_ms}ms total`;
+                if (srcEl && fbData.retrieved_chunks) renderSources(srcEl, fbData.retrieved_chunks, state.method);
+            } catch (fbErr) {
+                if (textEl) {
+                    textEl.textContent = streamErr.name === 'AbortError' ? '(Cancelled)' : `[Error: ${streamErr.message}]`;
+                }
             }
         } finally {
             state.generating = false;
@@ -514,7 +577,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ══════════ SOURCES RENDERING ══════════
     function renderSources(container, chunks, method) {
-        if (!chunks.length) {
+        if (!chunks || !chunks.length) {
             container.innerHTML = '';
             return;
         }
@@ -539,7 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const scoreNum = Math.abs(Number(c.score)) || 0;
             const pct = Math.min(100, Math.max(15, Math.round((scoreNum / maxScore) * 100)));
             html += `
-                <button class="source-pill" data-target="${ids[i]}">
+                <button class="source-pill" data-target="${ids[i]}" type="button">
                     <span class="source-num">${i + 1}</span>
                     <div class="source-pill-text">
                         <div class="source-pill-top">
@@ -584,7 +647,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Toggle source details on pill click
         container.querySelectorAll('.source-pill').forEach(pill => {
-            pill.addEventListener('click', () => {
+            pill.addEventListener('click', evt => {
+                evt.preventDefault();
                 const btn = /** @type {HTMLElement} */ (pill);
                 const targetId = btn.dataset.target;
                 if (!targetId) return;
@@ -613,4 +677,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize
     sync();
-});
+}
+
+// Ensure execution whether script loads before or after DOMContentLoaded
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
