@@ -314,8 +314,33 @@ class RAGEngine:
             print(f"[*] Pruned inactive session after 30 min idle: {sid}")
             del self.sessions[sid]
 
+    @staticmethod
+    def normalize_model_name(name: Optional[str]) -> str:
+        """Normalizes model alias strings to internal canonical identifiers."""
+        if not name:
+            return "squad_ft"
+        n = name.lower().strip()
+        aliases = {
+            "gpt2_squad": "squad_ft",
+            "squad": "squad_ft",
+            "squad_ft": "squad_ft",
+            "gpt2_ft": "squad_ft",
+            "fine_tuned": "squad_ft",
+            "gpt2": "gpt2_pretrained",
+            "gpt2_pretrained": "gpt2_pretrained",
+            "gpt2_base": "gpt2_pretrained",
+            "base": "gpt2_pretrained",
+            "pretrained": "gpt2_pretrained",
+            "qwen": "qwen2.5_instruct",
+            "instruct": "qwen2.5_instruct",
+            "qwen2.5": "qwen2.5_instruct",
+            "qwen2.5_instruct": "qwen2.5_instruct",
+        }
+        return aliases.get(n, n)
+
     def load_model(self, model_name: str) -> bool:
         """Loads or switches active model ('squad_ft', 'gpt2_pretrained', or 'qwen2.5_instruct')."""
+        model_name = self.normalize_model_name(model_name)
         if model_name in self.models:
             self.current_model_name = model_name
             return True
@@ -532,6 +557,7 @@ class RAGEngine:
 
     def format_prompt(self, model_name: str, context: str, question: str) -> str:
         """Tailors prompt structure according to target model family."""
+        model_name = self.normalize_model_name(model_name)
         if model_name == "qwen2.5_instruct":
             return (
                 "<|im_start|>system\n"
@@ -551,6 +577,7 @@ class RAGEngine:
         temperature: float = 0.0
     ) -> Generator[str, None, None]:
         """Unified token generator for all models behind a single function."""
+        model_name = self.normalize_model_name(model_name)
         # Ensure target model is loaded
         if model_name not in self.models:
             success = self.load_model(model_name)
@@ -564,8 +591,9 @@ class RAGEngine:
 
             model, tokenizer = self.models["qwen2.5_instruct"]
             inputs = tokenizer(prompt, return_tensors="pt")
-            if torch.cuda.is_available():
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            target_device = "cuda" if torch.cuda.is_available() else "cpu"
+            model.to(target_device)
+            inputs = {k: v.to(target_device) for k, v in inputs.items()}
 
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             gen_kwargs = dict(
@@ -587,9 +615,11 @@ class RAGEngine:
         else:
             # Custom GPT-2 architecture
             model = self.models[model_name]
+            curr_device = "cuda" if torch.cuda.is_available() else "cpu"
+            model.to(curr_device)
             model.eval()
             ids = self.enc.encode(prompt)
-            idx = torch.tensor(ids, dtype=torch.long, device=self.device).unsqueeze(0)
+            idx = torch.tensor(ids, dtype=torch.long, device=curr_device).unsqueeze(0)
 
             with torch.no_grad():
                 for _ in range(max_new_tokens):
@@ -607,7 +637,7 @@ class RAGEngine:
 
                     token_str = self.enc.decode([next_id])
                     yield token_str
-                    idx = torch.cat((idx, torch.tensor([[next_id]], device=self.device)), dim=1)
+                    idx = torch.cat((idx, torch.tensor([[next_id]], device=idx.device)), dim=1)
 
     def answer_question(
         self,
@@ -622,7 +652,7 @@ class RAGEngine:
     ) -> Dict[str, Any]:
         """Full synchronous answer pipeline with per-session retrieval."""
         t_start = time.time()
-        active_model = model or self.current_model_name
+        active_model = self.normalize_model_name(model or self.current_model_name)
 
         # Step 1: Retrieval from session index
         t_ret_start = time.time()
