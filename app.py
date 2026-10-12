@@ -152,17 +152,52 @@ async def chat(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     sid = req.session_id or x_session_id or "default"
     active_model = req.model or engine.current_model_name
 
-    response = engine.answer_question(
-        question=req.question,
-        k=req.k or 3,
-        method=req.method or "hybrid",
-        max_context_tokens=req.max_context_tokens or 400,
-        max_new_tokens=req.max_new_tokens or 48,
-        temperature=req.temperature or 0.0,
-        model=active_model,
-        session_id=sid,
-    )
-    return response
+    t_start = time.time()
+    results = engine.retrieve(req.question, k=req.k or 3, method=req.method or "hybrid", session_id=sid)
+    retrieval_ms = round((time.time() - t_start) * 1000, 2)
+    context = engine.format_context(results, req.max_context_tokens or 400)
+    prompt = engine.format_prompt(active_model, context, req.question)
+
+    t_gen_start = time.time()
+    generated_tokens = []
+    try:
+        for tok in gpu_generate(
+            model_name=active_model,
+            prompt=prompt,
+            max_new_tokens=req.max_new_tokens or 48,
+            temperature=req.temperature or 0.0
+        ):
+            generated_tokens.append(tok)
+    except Exception as e:
+        print(f"[!] ZeroGPU sync execution error: {e}. Falling back to standard CPU execution...")
+        for tok in engine.generate(
+            model_name=active_model,
+            prompt=prompt,
+            max_new_tokens=req.max_new_tokens or 48,
+            temperature=req.temperature or 0.0
+        ):
+            generated_tokens.append(tok)
+
+    answer = "".join(generated_tokens).strip()
+    generation_ms = round((time.time() - t_gen_start) * 1000, 2)
+    total_ms = round((time.time() - t_start) * 1000, 2)
+
+    retrieved_clean = [
+        {"chunk_id": c["chunk_id"], "doc_id": c["doc_id"], "text": c["text"], "score": round(score, 4)}
+        for c, score in results
+    ]
+
+    return {
+        "answer": answer,
+        "context_used": context,
+        "retrieved_chunks": retrieved_clean,
+        "metrics": {
+            "retrieval_ms": retrieval_ms,
+            "generation_ms": generation_ms,
+            "total_ms": total_ms,
+            "token_count": len(generated_tokens),
+        }
+    }
 
 
 async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
