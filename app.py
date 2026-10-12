@@ -54,21 +54,43 @@ class SwitchModelRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Gradio Blocks App Container (Satisfies ZeroGPU Runner Requirement)
+# Gradio Blocks Container
+# Directly renders the exact identical full-screen application iframe,
+# removing all default Gradio widgets, footers, margins, and blue styles.
 # ---------------------------------------------------------------------------
 
-with gr.Blocks(title="Document Assistant — GPT-2 RAG") as demo:
+GRADIO_FULLSCREEN_CSS = """
+html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    background: #f8f9fa !important;
+}
+.gradio-container {
+    max-width: 100% !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: #f8f9fa !important;
+}
+footer, .gradio-container > footer {
+    display: none !important;
+}
+"""
+
+with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=GRADIO_FULLSCREEN_CSS) as demo:
     gr.HTML(
         """
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 48px 16px;">
-            <h1 style="font-size: 24px; font-weight: 700; color: #111827; margin-bottom: 8px;">Document Assistant</h1>
-            <p style="color: #4b5563; font-size: 15px; margin-bottom: 16px;">
-                The pure-white interactive application is serving at root. If your browser does not load it automatically, please click below:
-            </p>
-            <a href="/" style="display: inline-block; padding: 10px 20px; background: #0969da; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 500;">
-                Open Document Assistant
-            </a>
-        </div>
+        <iframe
+            src="/app"
+            style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: none; margin: 0; padding: 0; z-index: 999999; background: #f8f9fa;"
+            title="Document Assistant"
+            allow="clipboard-write"
+        ></iframe>
         """
     )
 
@@ -86,25 +108,34 @@ demo.app.add_middleware(
 )
 
 
-# Intercept Root ("/") to serve the EXACT identical pure-white static/index.html
-@demo.app.middleware("http")
-async def serve_custom_ui_middleware(request: Request, call_next):
-    if (request.url.path == "/" or request.url.path == "/index.html") and request.method == "GET":
-        if "view=gradio" not in str(request.url):
-            index_file = os.path.join(STATIC_DIR, "index.html")
-            if os.path.exists(index_file):
-                with open(index_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                return HTMLResponse(
-                    content=content,
-                    headers={
-                        "Cache-Control": "no-cache, no-store, must-revalidate",
-                        "Pragma": "no-cache",
-                        "Expires": "0",
-                        "X-Frame-Options": "ALLOWALL",
-                    }
-                )
-    return await call_next(request)
+def get_index_html_response() -> HTMLResponse:
+    index_file = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_file):
+        with open(index_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    else:
+        content = "<h1>Document Assistant loading...</h1>"
+    return HTMLResponse(
+        content=content,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Frame-Options": "ALLOWALL",
+            "Content-Security-Policy": "frame-ancestors *",
+        }
+    )
+
+
+# Standalone application routes serving the exact pure-white index.html
+@demo.app.get("/app", response_class=HTMLResponse)
+async def serve_app():
+    return get_index_html_response()
+
+
+@demo.app.get("/index.html", response_class=HTMLResponse)
+async def serve_index():
+    return get_index_html_response()
 
 
 # Serve style.css directly from root & static
