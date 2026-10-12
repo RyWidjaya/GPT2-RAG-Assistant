@@ -347,7 +347,6 @@
         // ── Clear Documents ──
         window.handleClearKbClick = async function(evt) {
             if (evt) evt.preventDefault();
-            if (!confirm('Remove all documents from your session?')) return;
             try {
                 await fetch('/api/context/clear', {
                     method: 'DELETE',
@@ -452,7 +451,7 @@
             const asstNames = {
                 squad_ft: 'Document Assistant (GPT-2 Fine-Tuned)',
                 gpt2_pretrained: 'GPT-2 Base',
-                qwen2.5_instruct: 'Qwen 2.5 1.5B Instruct'
+                'qwen2.5_instruct': 'Qwen 2.5 1.5B Instruct'
             };
             const asstName = asstNames[state.model] || 'Document Assistant';
             asstDiv.innerHTML = `

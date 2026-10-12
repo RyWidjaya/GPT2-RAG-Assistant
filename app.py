@@ -325,7 +325,7 @@ def handle_upload(files):
 def handle_clear():
     session = engine.get_session("default")
     session.clear_documents()
-    return "Knowledge base cleared.", get_kb_badge()
+    return None, "Knowledge base cleared.", get_kb_badge()
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +399,7 @@ with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=CUSTOM_CSS) as demo
             </div>
             """
         )
-        kb_status_badge = gr.Markdown(value=f"**Status:** {get_kb_badge()}")
+        kb_status_badge = gr.Markdown(value=get_kb_badge())
         file_input = gr.File(
             label="Drop files here (.txt, .md, .pdf | max 5 MB)",
             file_count="multiple",
@@ -460,6 +460,13 @@ with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=CUSTOM_CSS) as demo
     # Wire Events
     # -----------------------------------------------------------------------
 
+    # Model selector dynamic hot-swap
+    model_dropdown.change(
+        fn=lambda m: engine.load_model(m),
+        inputs=[model_dropdown],
+        outputs=None,
+    )
+
     # Send button & Enter key
     btn_send.click(
         fn=ask_fn,
@@ -472,44 +479,54 @@ with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=CUSTOM_CSS) as demo
         outputs=[ans_display, sources_display],
     )
 
-    # Starters (click fills question and executes immediately)
+    # Starters (populate question box and stream answer immediately)
+    def run_starter_1(m, meth, k):
+        q = "How many championships has Faker won?"
+        for ans, src in ask_fn(q, m, meth, k):
+            yield q, ans, src
+
+    def run_starter_2(m, meth, k):
+        q = "What team did Faker debut with?"
+        for ans, src in ask_fn(q, m, meth, k):
+            yield q, ans, src
+
+    def run_starter_3(m, meth, k):
+        q = "What playstyle is Faker known for?"
+        for ans, src in ask_fn(q, m, meth, k):
+            yield q, ans, src
+
+    def run_starter_4(m, meth, k):
+        q = "What is photosynthesis?"
+        for ans, src in ask_fn(q, m, meth, k):
+            yield q, ans, src
+
     btn_s1.click(
-        fn=lambda: "How many championships has Faker won?",
-        outputs=q_box,
-    ).then(
-        fn=ask_fn,
-        inputs=[q_box, model_dropdown, method_dropdown, k_slider],
-        outputs=[ans_display, sources_display],
+        fn=run_starter_1,
+        inputs=[model_dropdown, method_dropdown, k_slider],
+        outputs=[q_box, ans_display, sources_display],
     )
-
     btn_s2.click(
-        fn=lambda: "What team did Faker debut with?",
-        outputs=q_box,
-    ).then(
-        fn=ask_fn,
-        inputs=[q_box, model_dropdown, method_dropdown, k_slider],
-        outputs=[ans_display, sources_display],
+        fn=run_starter_2,
+        inputs=[model_dropdown, method_dropdown, k_slider],
+        outputs=[q_box, ans_display, sources_display],
     )
-
     btn_s3.click(
-        fn=lambda: "What playstyle is Faker known for?",
-        outputs=q_box,
-    ).then(
-        fn=ask_fn,
-        inputs=[q_box, model_dropdown, method_dropdown, k_slider],
-        outputs=[ans_display, sources_display],
+        fn=run_starter_3,
+        inputs=[model_dropdown, method_dropdown, k_slider],
+        outputs=[q_box, ans_display, sources_display],
     )
-
     btn_s4.click(
-        fn=lambda: "What is photosynthesis?",
-        outputs=q_box,
-    ).then(
-        fn=ask_fn,
-        inputs=[q_box, model_dropdown, method_dropdown, k_slider],
-        outputs=[ans_display, sources_display],
+        fn=run_starter_4,
+        inputs=[model_dropdown, method_dropdown, k_slider],
+        outputs=[q_box, ans_display, sources_display],
     )
 
-    # File shelf events
+    # File shelf events: auto-upload on drop/selection and manual button click
+    file_input.upload(
+        fn=handle_upload,
+        inputs=file_input,
+        outputs=[upload_log, kb_status_badge],
+    )
     btn_upload.click(
         fn=handle_upload,
         inputs=file_input,
@@ -517,7 +534,7 @@ with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=CUSTOM_CSS) as demo
     )
     btn_clear_kb.click(
         fn=handle_clear,
-        outputs=[upload_log, kb_status_badge],
+        outputs=[file_input, upload_log, kb_status_badge],
     )
 
 # ---------------------------------------------------------------------------
