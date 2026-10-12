@@ -8,10 +8,6 @@ Integrates:
 - Token-by-token streaming & synchronous generation
 """
 
-try:
-    import spaces
-except ImportError:
-    pass
 
 import os
 import sys
@@ -248,13 +244,7 @@ class RAGEngine:
     SESSION_IDLE_TIMEOUT = 1800  # 30 minutes in seconds
 
     def __init__(self, checkpoint_path: Optional[str] = None):
-        # On Hugging Face ZeroGPU spaces, global CUDA allocations at startup are forbidden
-        # and cause ZeroGPU supervisor aborts. Models must remain on CPU at startup.
-        is_zero_gpu = os.environ.get("SPACES_ZERO_GPU") is not None or os.environ.get("SPACE_ID") is not None
-        if is_zero_gpu:
-            self.device = "cpu"
-        else:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.checkpoint_path = checkpoint_path or os.environ.get("CHECKPOINT_PATH", "checkpoints/gpt2_124M_squad_ft.pt")
         self.enc = tiktoken.get_encoding("gpt2")
         self.eos_id = self.enc.eot_token
