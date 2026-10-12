@@ -41,8 +41,8 @@ with gr.Blocks(title="Document Assistant - GPT-2 RAG") as demo:
     gr.Markdown(
         """
         Grounded document assistant powered by fine-tuned GPT-2 124M and hybrid BM25 + FAISS retrieval.
-        * Open the **Full Custom Enterprise UI**: **[Click here to open /ui](/ui)**
-        * Or query directly below:
+        * **Full Enterprise UI**: [Open Standalone UI](/ui)
+        * Or ask directly using the ZeroGPU interface below:
         """
     )
     with gr.Row():
