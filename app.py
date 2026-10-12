@@ -5,540 +5,319 @@ except ImportError:
     spaces = None
 
 import os
+import sys
+import json
+import time
+import asyncio
+from typing import List, Optional
+
 import torch
 import gradio as gr
-from rag_server import engine
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from rag_engine import RAGEngine
+
+# Global Engine instance
+engine = RAGEngine()
+
+# Wrap generation with ZeroGPU if running on Hugging Face Spaces with ZeroGPU
+if spaces is not None:
+    engine.generate = spaces.GPU(duration=60)(engine.generate)
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+
+# Pydantic Request Models
+class ChatRequest(BaseModel):
+    question: str
+    method: Optional[str] = "hybrid"
+    k: Optional[int] = 3
+    max_context_tokens: Optional[int] = 400
+    max_new_tokens: Optional[int] = 48
+    temperature: Optional[float] = 0.0
+    model: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class LocalPathRequest(BaseModel):
+    path: str
+    session_id: Optional[str] = None
+
+
+class SwitchModelRequest(BaseModel):
+    model: str
+
 
 # ---------------------------------------------------------------------------
-# Custom CSS matching static/style.css directly
+# Gradio Blocks App Container (Satisfies ZeroGPU Runner Requirement)
 # ---------------------------------------------------------------------------
 
-CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-
-:root {
-    --font: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    --bg: #f8f9fa;
-    --surface: #ffffff;
-    --border: #e5e7eb;
-    --border-hover: #d1d5db;
-    --border-focus: #0969da;
-    --text-1: #111827;
-    --text-2: #374151;
-    --text-3: #5b6574;
-    --accent: #0969da;
-    --accent-hover: #0757b8;
-    --accent-bg: #eff6ff;
-    --accent-border: #bfdbfe;
-    --radius: 10px;
-    --radius-sm: 8px;
-}
-
-body, .gradio-container {
-    background-color: var(--bg) !important;
-    font-family: var(--font) !important;
-    color: var(--text-1) !important;
-    max-width: 840px !important;
-    margin: 0 auto !important;
-    padding: 0 16px 32px !important;
-}
-
-footer {
-    display: none !important;
-}
-
-/* Demo Notice Banner */
-.demo-banner {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 6px 16px;
-    background: var(--accent-bg);
-    border: 1px solid var(--accent-border);
-    border-radius: var(--radius-sm);
-    color: var(--text-2);
-    font-size: 0.75rem;
-    font-weight: 500;
-    margin: 12px 0 10px;
-}
-
-/* Header */
-.header-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 16px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: 12px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-}
-
-.header-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.header-title {
-    font-size: 0.9375rem;
-    font-weight: 600;
-    color: var(--text-1);
-}
-
-/* Hero / Empty State */
-.hero-box {
-    text-align: center;
-    padding: 24px 16px 12px;
-}
-
-.hero-title {
-    font-size: 1.5rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--text-1);
-    margin-bottom: 6px;
-}
-
-.hero-desc {
-    font-size: 0.875rem;
-    color: var(--text-2);
-    max-width: 580px;
-    margin: 0 auto 16px;
-    line-height: 1.5;
-}
-
-/* Starters row */
-.starters-row {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-    margin-bottom: 16px;
-}
-
-.starter-btn {
-    border: 1px solid var(--border) !important;
-    border-radius: 20px !important;
-    background: var(--surface) !important;
-    color: var(--text-2) !important;
-    font-size: 0.8125rem !important;
-    font-weight: 500 !important;
-    padding: 6px 14px !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.03) !important;
-    transition: all 0.12s ease !important;
-}
-
-.starter-btn:hover {
-    border-color: var(--border-hover) !important;
-    color: var(--text-1) !important;
-    box-shadow: 0 3px 8px rgba(0,0,0,0.06) !important;
-    transform: translateY(-1px) !important;
-}
-
-/* Documents Shelf */
-.kb-shelf-accordion {
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius) !important;
-    background: var(--surface) !important;
-    margin-bottom: 12px !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.02) !important;
-}
-
-.privacy-notice {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    background: #f1f3f5;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-2);
-    font-size: 0.75rem;
-    font-weight: 500;
-    margin-bottom: 10px;
-}
-
-/* Composer Card */
-.composer-wrap {
-    background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius) !important;
-    box-shadow: 0 3px 10px rgba(0,0,0,0.05) !important;
-    padding: 8px 12px !important;
-    margin-top: 8px !important;
-    transition: border-color 0.15s ease !important;
-}
-
-.composer-wrap:focus-within {
-    border-color: var(--accent) !important;
-    box-shadow: 0 0 0 1px var(--accent), 0 4px 12px rgba(0,0,0,0.06) !important;
-}
-
-/* Primary Send Button */
-.send-btn {
-    background-color: var(--accent) !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: var(--radius-sm) !important;
-    font-weight: 600 !important;
-    transition: background-color 0.12s ease !important;
-}
-
-.send-btn:hover {
-    background-color: var(--accent-hover) !important;
-}
-
-.composer-footer {
-    text-align: center;
-    font-size: 0.72rem;
-    color: var(--text-3);
-    margin-top: 10px;
-}
-"""
-
-# ---------------------------------------------------------------------------
-# Helpers for Document Shelf & Formatting
-# ---------------------------------------------------------------------------
-
-def get_kb_badge():
-    status = engine.get_status(session_id="default")
-    doc_count = status.get("document_count", 0)
-    chunk_count = status.get("chunk_count", 0)
-    docs = [d.get("name", "doc") for d in status.get("documents", [])]
-    return f"**Status:** {doc_count} document(s), {chunk_count} chunks · **Active Files:** {', '.join(docs) if docs else 'None'}"
-
-
-def format_sources_html(results):
-    if not results:
-        return ""
-
-    max_score = max((score for _, score in results), default=1.0)
-    if max_score <= 0:
-        max_score = 1.0
-
-    cards_html = []
-    for idx, (chunk, score) in enumerate(results, 1):
-        doc_id = chunk.get("doc_id", "Document")
-        chunk_id = chunk.get("chunk_id", f"chunk{idx}")
-        text = chunk.get("text", "").strip()
-        pct = min(100, max(15, int((score / max_score) * 100)))
-
-        card = f"""
-        <div style="border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff; padding: 10px 14px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: #eff6ff; color: #0969da; font-size: 11px; font-weight: 600;">{idx}</span>
-                    <span style="font-weight: 600; font-size: 13px; color: #111827;">{doc_id}</span>
-                    <span style="font-family: monospace; font-size: 11px; color: #5b6574;">{chunk_id}</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                    <div style="width: 44px; height: 4px; border-radius: 2px; background: #e5e7eb; overflow: hidden;">
-                        <div style="width: {pct}%; height: 100%; background: #0969da; border-radius: 2px;"></div>
-                    </div>
-                    <span style="font-family: monospace; font-size: 11px; color: #5b6574;">{score:.4f}</span>
-                </div>
-            </div>
-            <div style="font-size: 13px; color: #374151; line-height: 1.55; background: #f8f9fa; padding: 8px 12px; border-radius: 6px; border-left: 3px solid #0969da;">
-                {text}
-            </div>
+with gr.Blocks(title="Document Assistant — GPT-2 RAG") as demo:
+    gr.HTML(
+        """
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 48px 16px;">
+            <h1 style="font-size: 24px; font-weight: 700; color: #111827; margin-bottom: 8px;">Document Assistant</h1>
+            <p style="color: #4b5563; font-size: 15px; margin-bottom: 16px;">
+                The pure-white interactive application is serving at root. If your browser does not load it automatically, please click below:
+            </p>
+            <a href="/" style="display: inline-block; padding: 10px 20px; background: #0969da; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 500;">
+                Open Document Assistant
+            </a>
         </div>
         """
-        cards_html.append(card)
-
-    return f"""
-    <div style="margin-top: 14px;">
-        <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #5b6574; margin-bottom: 8px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            <span>Retrieved Context ({len(results)} chunks with relevance score bars)</span>
-        </div>
-        {''.join(cards_html)}
-    </div>
-    """
+    )
 
 # ---------------------------------------------------------------------------
-# Inference & Streaming Generator Logic
+# Attach Identical Full Application Middleware & Routes to demo.app
 # ---------------------------------------------------------------------------
 
-def ask_assistant_gen(question: str, model_choice: str = "squad_ft", search_method: str = "hybrid", k: int = 3):
-    if not question or not question.strip():
-        yield "Please enter a question in the box below.", ""
-        return
-
-    # 1. Retrieve
-    results = engine.retrieve(question, k=int(k), method=search_method, session_id="default")
-    if not results:
-        yield (
-            "No matching context found. Please ensure documents are indexed in the shelf above.",
-            "<p style='color:#5b6574;font-size:13px;'>No context chunks retrieved.</p>"
-        )
-        return
-
-    sources_html = format_sources_html(results)
-    context = engine.format_context(results, max_context_tokens=400)
-    prompt = engine.format_prompt(model_choice, context, question)
-
-    # 2. Token-by-token streaming
-    accumulated_tokens = []
-    yield "Thinking & generating answer...", sources_html
-
-    for tok in engine.generate(model_choice, prompt, max_new_tokens=64, temperature=0.0):
-        accumulated_tokens.append(tok)
-        yield "".join(accumulated_tokens), sources_html
+# Enable CORS for cross-origin and iframe embedding
+demo.app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-if spaces is not None:
-    ask_fn = spaces.GPU(duration=60)(ask_assistant_gen)
-else:
-    ask_fn = ask_assistant_gen
+# Intercept Root ("/") to serve the EXACT identical pure-white static/index.html
+@demo.app.middleware("http")
+async def serve_custom_ui_middleware(request: Request, call_next):
+    if (request.url.path == "/" or request.url.path == "/index.html") and request.method == "GET":
+        if "view=gradio" not in str(request.url):
+            index_file = os.path.join(STATIC_DIR, "index.html")
+            if os.path.exists(index_file):
+                with open(index_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return HTMLResponse(
+                    content=content,
+                    headers={
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache",
+                        "Expires": "0",
+                        "X-Frame-Options": "ALLOWALL",
+                    }
+                )
+    return await call_next(request)
+
+
+# Serve style.css directly from root & static
+@demo.app.get("/style.css")
+async def serve_root_style():
+    css_file = os.path.join(STATIC_DIR, "style.css")
+    if os.path.exists(css_file):
+        with open(css_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(
+                content=f.read(),
+                media_type="text/css",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+            )
+    raise HTTPException(status_code=404, detail="style.css not found")
+
+
+@demo.app.get("/app.js")
+async def serve_root_app_js():
+    js_file = os.path.join(STATIC_DIR, "app.js")
+    if os.path.exists(js_file):
+        with open(js_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(
+                content=f.read(),
+                media_type="application/javascript",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+            )
+    raise HTTPException(status_code=404, detail="app.js not found")
+
+
+# Mount /static directory
+demo.app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ---------------------------------------------------------------------------
-# File Management Handlers
+# API Endpoints (Identical to Localhost Backend)
 # ---------------------------------------------------------------------------
 
-def handle_upload(files):
-    if not files:
-        return "No files selected.", get_kb_badge()
+@demo.app.get("/api/status")
+async def get_status(request: Request, x_session_id: Optional[str] = Header(None)):
+    """Returns system status, active model, and visitor session inventory."""
+    sid = x_session_id or request.query_params.get("session_id") or "default"
+    return engine.get_status(session_id=sid)
 
-    session = engine.get_session("default")
+
+@demo.app.post("/api/model/switch")
+async def switch_model(req: SwitchModelRequest):
+    """Switch active model between squad_ft, gpt2_pretrained, and qwen2.5_instruct."""
+    allowed = ["squad_ft", "gpt2_pretrained", "qwen2.5_instruct"]
+    if req.model not in allowed:
+        raise HTTPException(status_code=400, detail=f"Model must be one of {allowed}")
+    success = engine.load_model(req.model)
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Failed to load model {req.model}")
+    return {"success": True, "current_model": engine.current_model_name}
+
+
+@demo.app.post("/api/chat")
+async def chat(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
+    """Synchronous chat response with full context and chunk metrics."""
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    sid = req.session_id or x_session_id or "default"
+    active_model = req.model or engine.current_model_name
+
+    response = engine.answer_question(
+        question=req.question,
+        k=req.k or 3,
+        method=req.method or "hybrid",
+        max_context_tokens=req.max_context_tokens or 400,
+        max_new_tokens=req.max_new_tokens or 48,
+        temperature=req.temperature or 0.0,
+        model=active_model,
+        session_id=sid,
+    )
+    return response
+
+
+@demo.app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
+    """Server-Sent Events (SSE) streaming for real-time typewriter generation."""
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    sid = req.session_id or x_session_id or "default"
+    active_model = req.model or engine.current_model_name
+
+    if active_model not in engine.models:
+        engine.load_model(active_model)
+
+    async def event_generator():
+        t0 = time.time()
+        # Retrieve chunks from visitor session
+        results = engine.retrieve(req.question, k=req.k or 3, method=req.method or "hybrid", session_id=sid)
+        retrieval_ms = round((time.time() - t0) * 1000, 2)
+        context = engine.format_context(results, req.max_context_tokens or 400)
+        prompt = engine.format_prompt(active_model, context, req.question)
+
+        clean_chunks = [
+            {
+                "chunk_id": c["chunk_id"],
+                "doc_id": c["doc_id"],
+                "text": c["text"],
+                "score": round(score, 4)
+            }
+            for c, score in results
+        ]
+
+        # Send initial metadata event
+        meta_payload = {
+            "retrieved_chunks": clean_chunks,
+            "context_used": context,
+            "retrieval_ms": retrieval_ms,
+            "model": active_model,
+            "method": req.method or "hybrid",
+            "session_id": sid
+        }
+        yield f"event: metadata\ndata: {json.dumps(meta_payload)}\n\n"
+
+        # Stream generated tokens (accelerated via ZeroGPU when on HF Space)
+        t_gen_start = time.time()
+        token_count = 0
+        for token in engine.generate(
+            model_name=active_model,
+            prompt=prompt,
+            max_new_tokens=req.max_new_tokens or 48,
+            temperature=req.temperature or 0.0
+        ):
+            token_count += 1
+            yield f"event: token\ndata: {json.dumps({'token': token})}\n\n"
+            await asyncio.sleep(0.005)
+
+        total_ms = round((time.time() - t0) * 1000, 2)
+        done_payload = {
+            "token_count": token_count,
+            "total_ms": total_ms,
+            "generation_ms": round((time.time() - t_gen_start) * 1000, 2)
+        }
+        yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@demo.app.post("/api/context/load-local")
+async def load_local_folder(req: LocalPathRequest, x_session_id: Optional[str] = Header(None)):
+    """Loads all documents from a local folder into visitor's session store."""
+    sid = req.session_id or x_session_id or "default"
+    session = engine.get_session(sid)
+    try:
+        status = session.load_directory(req.path)
+        return {"success": True, "status": status}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@demo.app.post("/api/context/upload")
+async def upload_files(
+    files: List[UploadFile] = File(...),
+    session_id: Optional[str] = Form(None),
+    x_session_id: Optional[str] = Header(None)
+):
+    """Handles session document upload (max 5 MB per file, max 5 files, .txt/.md/.pdf only)."""
+    sid = session_id or x_session_id or "default"
+    session = engine.get_session(sid)
+
     file_tuples = []
     for f in files:
-        filepath = f.name if hasattr(f, "name") else str(f)
-        fname = os.path.basename(filepath)
-        try:
-            with open(filepath, "rb") as fp:
-                file_tuples.append((fname, fp.read()))
-        except Exception as e:
-            return f"Error reading {fname}: {e}", get_kb_badge()
+        fname = f.filename
+        content = await f.read()
+        file_tuples.append((fname, content))
 
     try:
         status = session.add_documents_from_bytes(file_tuples)
-        msg = f"✓ Ingested {len(file_tuples)} file(s). Total chunks: {status.get('chunk_count', 0)}"
-        return msg, get_kb_badge()
+        return {"success": True, "status": status}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        return f"Ingestion error: {e}", get_kb_badge()
+        raise HTTPException(status_code=500, detail=f"Unexpected error processing files: {str(e)}")
 
 
-def handle_clear():
-    session = engine.get_session("default")
-    session.clear_documents()
-    return None, "Knowledge base cleared.", get_kb_badge()
+@demo.app.delete("/api/context/document/{doc_id:path}")
+async def remove_document(
+    doc_id: str,
+    session_id: Optional[str] = None,
+    x_session_id: Optional[str] = Header(None)
+):
+    """Removes a single document from visitor's session store."""
+    sid = session_id or x_session_id or "default"
+    status = engine.remove_document(doc_id, session_id=sid)
+    return {"success": True, "status": status}
+
+
+@demo.app.delete("/api/context/clear")
+async def clear_context(
+    session_id: Optional[str] = None,
+    x_session_id: Optional[str] = Header(None)
+):
+    """Wipes all documents from visitor's session store."""
+    sid = session_id or x_session_id or "default"
+    status = engine.clear_documents(session_id=sid)
+    return {"success": True, "status": status}
 
 
 # ---------------------------------------------------------------------------
-# Gradio Blocks Web Application (Single Centered Column Layout)
-# ---------------------------------------------------------------------------
-
-with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=CUSTOM_CSS) as demo:
-    # 1. Demo Notice Banner
-    gr.HTML(
-        """
-        <div class="demo-banner">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            <span>Demo model (GPT-2, 124M). Answers may be unreliable.</span>
-        </div>
-        """
-    )
-
-    # 2. Header Bar
-    gr.HTML(
-        """
-        <div class="header-bar">
-            <div class="header-left">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-                <span class="header-title">Document Assistant</span>
-            </div>
-            <div style="font-size: 12px; color: #5b6574; font-weight: 500;">
-                ZeroGPU · 24/7 Cloud
-            </div>
-        </div>
-        """
-    )
-
-    # 3. Model Controls Bar
-    with gr.Row():
-        model_dropdown = gr.Dropdown(
-            choices=[
-                ("GPT-2 fine-tuned (SQuAD 124M)", "squad_ft"),
-                ("GPT-2 base (OpenAI 124M)", "gpt2_pretrained"),
-                ("Qwen 2.5 1.5B (Instruct)", "qwen2.5_instruct"),
-            ],
-            value="squad_ft",
-            label="Active Model",
-            scale=3,
-        )
-        method_dropdown = gr.Dropdown(
-            choices=[
-                ("Hybrid (BM25 + FAISS)", "hybrid"),
-                ("Semantic (FAISS Dense)", "dense"),
-                ("Keyword (BM25 Sparse)", "sparse"),
-            ],
-            value="hybrid",
-            label="Search Method",
-            scale=2,
-        )
-        k_slider = gr.Slider(
-            minimum=1,
-            maximum=5,
-            step=1,
-            value=3,
-            label="Top-k",
-            scale=1,
-        )
-
-    # 4. Collapsible Document Shelf
-    with gr.Accordion(label="📁 Document Ingestion Shelf", open=False, elem_classes=["kb-shelf-accordion"]):
-        gr.HTML(
-            """
-            <div class="privacy-notice">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5b6574" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                <span>Don't upload anything private. Files are deleted after your session or 30 minutes of inactivity.</span>
-            </div>
-            """
-        )
-        kb_status_badge = gr.Markdown(value=get_kb_badge())
-        file_input = gr.File(
-            label="Drop files here (.txt, .md, .pdf | max 5 MB)",
-            file_count="multiple",
-            file_types=[".txt", ".md", ".pdf"],
-        )
-        with gr.Row():
-            btn_upload = gr.Button("Ingest & Index Files", variant="primary", scale=2)
-            btn_clear_kb = gr.Button("Clear All Documents", scale=1)
-        upload_log = gr.Textbox(label="Ingestion Log", lines=1, interactive=False)
-
-    # 5. Hero / Empty State & Clickable Starters
-    gr.HTML(
-        """
-        <div class="hero-box">
-            <h1 class="hero-title">Ask questions about your documents.</h1>
-            <p class="hero-desc">This assistant uses a custom-built GPT-2 model with hybrid retrieval (BM25 + FAISS) to answer questions grounded in your uploaded context.</p>
-        </div>
-        """
-    )
-
-    with gr.Row(elem_classes=["starters-row"]):
-        btn_s1 = gr.Button("How many championships has Faker won?", elem_classes=["starter-btn"])
-        btn_s2 = gr.Button("What team did Faker debut with?", elem_classes=["starter-btn"])
-        btn_s3 = gr.Button("What playstyle is Faker known for?", elem_classes=["starter-btn"])
-        btn_s4 = gr.Button("What is photosynthesis?", elem_classes=["starter-btn"])
-
-    # 6. Assistant Response & Signature Source Cards
-    ans_display = gr.Textbox(
-        label="Assistant Response",
-        lines=4,
-        interactive=False,
-        placeholder="Answers grounded in retrieved context will appear here...",
-    )
-    sources_display = gr.HTML(value="")
-
-    # 7. Floating Composer
-    with gr.Row(elem_classes=["composer-wrap"]):
-        q_box = gr.Textbox(
-            placeholder="Ask a question...",
-            lines=1,
-            max_lines=4,
-            show_label=False,
-            scale=8,
-            container=False,
-            autofocus=True,
-        )
-        btn_send = gr.Button("Send", variant="primary", scale=1, elem_classes=["send-btn"])
-
-    gr.HTML(
-        """
-        <p class="composer-footer">
-            Demo model (GPT-2, 124M) with hybrid retrieval · Running on ZeroGPU (Nvidia A10G) · Answers may be unreliable.
-        </p>
-        """
-    )
-
-    # -----------------------------------------------------------------------
-    # Wire Events
-    # -----------------------------------------------------------------------
-
-    # Model selector dynamic hot-swap
-    model_dropdown.change(
-        fn=lambda m: engine.load_model(m),
-        inputs=[model_dropdown],
-        outputs=None,
-    )
-
-    # Send button & Enter key
-    btn_send.click(
-        fn=ask_fn,
-        inputs=[q_box, model_dropdown, method_dropdown, k_slider],
-        outputs=[ans_display, sources_display],
-    )
-    q_box.submit(
-        fn=ask_fn,
-        inputs=[q_box, model_dropdown, method_dropdown, k_slider],
-        outputs=[ans_display, sources_display],
-    )
-
-    # Starters (populate question box and stream answer immediately)
-    def run_starter_1(m, meth, k):
-        q = "How many championships has Faker won?"
-        for ans, src in ask_fn(q, m, meth, k):
-            yield q, ans, src
-
-    def run_starter_2(m, meth, k):
-        q = "What team did Faker debut with?"
-        for ans, src in ask_fn(q, m, meth, k):
-            yield q, ans, src
-
-    def run_starter_3(m, meth, k):
-        q = "What playstyle is Faker known for?"
-        for ans, src in ask_fn(q, m, meth, k):
-            yield q, ans, src
-
-    def run_starter_4(m, meth, k):
-        q = "What is photosynthesis?"
-        for ans, src in ask_fn(q, m, meth, k):
-            yield q, ans, src
-
-    btn_s1.click(
-        fn=run_starter_1,
-        inputs=[model_dropdown, method_dropdown, k_slider],
-        outputs=[q_box, ans_display, sources_display],
-    )
-    btn_s2.click(
-        fn=run_starter_2,
-        inputs=[model_dropdown, method_dropdown, k_slider],
-        outputs=[q_box, ans_display, sources_display],
-    )
-    btn_s3.click(
-        fn=run_starter_3,
-        inputs=[model_dropdown, method_dropdown, k_slider],
-        outputs=[q_box, ans_display, sources_display],
-    )
-    btn_s4.click(
-        fn=run_starter_4,
-        inputs=[model_dropdown, method_dropdown, k_slider],
-        outputs=[q_box, ans_display, sources_display],
-    )
-
-    # File shelf events: auto-upload on drop/selection and manual button click
-    file_input.upload(
-        fn=handle_upload,
-        inputs=file_input,
-        outputs=[upload_log, kb_status_badge],
-    )
-    btn_upload.click(
-        fn=handle_upload,
-        inputs=file_input,
-        outputs=[upload_log, kb_status_badge],
-    )
-    btn_clear_kb.click(
-        fn=handle_clear,
-        outputs=[file_input, upload_log, kb_status_badge],
-    )
-
-# ---------------------------------------------------------------------------
-# Server Entrypoint
+# Launch Entrypoint (ZeroGPU Native Gradio Launcher)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
