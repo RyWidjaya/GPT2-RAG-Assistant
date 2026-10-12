@@ -379,7 +379,7 @@ class RAGEngine:
 
         if model_name == "squad_ft":
             if not os.path.exists(self.checkpoint_path):
-                hf_repo = os.environ.get("HF_MODEL_REPO")
+                hf_repo = os.environ.get("HF_MODEL_REPO", "XAEOZ/gpt2-squad-rag")
                 hf_filename = os.environ.get("HF_MODEL_FILENAME", "gpt2_124M_squad_ft.pt")
                 if hf_repo:
                     print(f"[*] Downloading '{hf_filename}' from Hugging Face model repository: {hf_repo}...")

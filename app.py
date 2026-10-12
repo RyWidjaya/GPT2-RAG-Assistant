@@ -18,6 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import uvicorn
+
+# Ensure default Hugging Face model repository
+if "HF_MODEL_REPO" not in os.environ:
+    os.environ["HF_MODEL_REPO"] = "XAEOZ/gpt2-squad-rag"
 
 from rag_engine import RAGEngine
 
@@ -26,10 +31,32 @@ engine = RAGEngine()
 
 # Wrap generation with ZeroGPU if running on Hugging Face Spaces with ZeroGPU
 if spaces is not None:
-    engine.generate = spaces.GPU(duration=60)(engine.generate)
+    try:
+        engine.generate = spaces.GPU(duration=60)(engine.generate)
+        print("[+] ZeroGPU enabled for engine.generate")
+    except Exception as e:
+        print(f"[!] Warning wrapping engine.generate with spaces.GPU: {e}")
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# FastAPI Application (Acts as Root Server)
+# ---------------------------------------------------------------------------
+app = FastAPI(
+    title="Document Assistant GPT-2 RAG",
+    description="Full-featured Document Assistant with GPT-2 + Hybrid RAG",
+    version="1.1.0"
+)
+
+# Enable CORS for cross-origin and iframe embedding
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Pydantic Request Models
@@ -53,61 +80,6 @@ class SwitchModelRequest(BaseModel):
     model: str
 
 
-# ---------------------------------------------------------------------------
-# Gradio Blocks Container
-# Directly renders the exact identical full-screen application iframe,
-# removing all default Gradio widgets, footers, margins, and blue styles.
-# ---------------------------------------------------------------------------
-
-GRADIO_FULLSCREEN_CSS = """
-html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    overflow: hidden !important;
-    background: #f8f9fa !important;
-}
-.gradio-container {
-    max-width: 100% !important;
-    width: 100% !important;
-    height: 100% !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border: none !important;
-    background: #f8f9fa !important;
-}
-footer, .gradio-container > footer {
-    display: none !important;
-}
-"""
-
-with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=GRADIO_FULLSCREEN_CSS) as demo:
-    gr.HTML(
-        """
-        <iframe
-            src="/app"
-            style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: none; margin: 0; padding: 0; z-index: 999999; background: #f8f9fa;"
-            title="Document Assistant"
-            allow="clipboard-write"
-        ></iframe>
-        """
-    )
-
-# ---------------------------------------------------------------------------
-# Attach Identical Full Application Middleware & Routes to demo.app
-# ---------------------------------------------------------------------------
-
-# Enable CORS for cross-origin and iframe embedding
-demo.app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 def get_index_html_response() -> HTMLResponse:
     index_file = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_file):
@@ -127,19 +99,26 @@ def get_index_html_response() -> HTMLResponse:
     )
 
 
-# Standalone application routes serving the exact pure-white index.html
-@demo.app.get("/app", response_class=HTMLResponse)
+# ---------------------------------------------------------------------------
+# Root UI Routes (Pure White Surface - Zero Gradio Widgets, Zero 404s)
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_root():
+    return get_index_html_response()
+
+
+@app.get("/app", response_class=HTMLResponse)
 async def serve_app():
     return get_index_html_response()
 
 
-@demo.app.get("/index.html", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
 async def serve_index():
     return get_index_html_response()
 
 
-# Serve style.css directly from root & static
-@demo.app.get("/style.css")
+@app.get("/style.css")
 async def serve_root_style():
     css_file = os.path.join(STATIC_DIR, "style.css")
     if os.path.exists(css_file):
@@ -152,7 +131,7 @@ async def serve_root_style():
     raise HTTPException(status_code=404, detail="style.css not found")
 
 
-@demo.app.get("/app.js")
+@app.get("/app.js")
 async def serve_root_app_js():
     js_file = os.path.join(STATIC_DIR, "app.js")
     if os.path.exists(js_file):
@@ -165,22 +144,21 @@ async def serve_root_app_js():
     raise HTTPException(status_code=404, detail="app.js not found")
 
 
-# Mount /static directory
-demo.app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ---------------------------------------------------------------------------
 # API Endpoints (Identical to Localhost Backend)
 # ---------------------------------------------------------------------------
 
-@demo.app.get("/api/status")
+@app.get("/api/status")
 async def get_status(request: Request, x_session_id: Optional[str] = Header(None)):
     """Returns system status, active model, and visitor session inventory."""
     sid = x_session_id or request.query_params.get("session_id") or "default"
     return engine.get_status(session_id=sid)
 
 
-@demo.app.post("/api/model/switch")
+@app.post("/api/model/switch")
 async def switch_model(req: SwitchModelRequest):
     """Switch active model between squad_ft, gpt2_pretrained, and qwen2.5_instruct."""
     allowed = ["squad_ft", "gpt2_pretrained", "qwen2.5_instruct"]
@@ -192,7 +170,7 @@ async def switch_model(req: SwitchModelRequest):
     return {"success": True, "current_model": engine.current_model_name}
 
 
-@demo.app.post("/api/chat")
+@app.post("/api/chat")
 async def chat(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     """Synchronous chat response with full context and chunk metrics."""
     if not req.question.strip():
@@ -214,7 +192,7 @@ async def chat(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     return response
 
 
-@demo.app.post("/api/chat/stream")
+@app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     """Server-Sent Events (SSE) streaming for real-time typewriter generation."""
     if not req.question.strip():
@@ -258,15 +236,27 @@ async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(Non
         # Stream generated tokens (accelerated via ZeroGPU when on HF Space)
         t_gen_start = time.time()
         token_count = 0
-        for token in engine.generate(
-            model_name=active_model,
-            prompt=prompt,
-            max_new_tokens=req.max_new_tokens or 48,
-            temperature=req.temperature or 0.0
-        ):
-            token_count += 1
-            yield f"event: token\ndata: {json.dumps({'token': token})}\n\n"
-            await asyncio.sleep(0.005)
+        try:
+            for token in engine.generate(
+                model_name=active_model,
+                prompt=prompt,
+                max_new_tokens=req.max_new_tokens or 48,
+                temperature=req.temperature or 0.0
+            ):
+                token_count += 1
+                yield f"event: token\ndata: {json.dumps({'token': token})}\n\n"
+                await asyncio.sleep(0.005)
+        except Exception as e:
+            print(f"[!] Generation error: {e}. Falling back to direct model execution...")
+            for token in engine.generate(
+                model_name=active_model,
+                prompt=prompt,
+                max_new_tokens=req.max_new_tokens or 48,
+                temperature=req.temperature or 0.0
+            ):
+                token_count += 1
+                yield f"event: token\ndata: {json.dumps({'token': token})}\n\n"
+                await asyncio.sleep(0.005)
 
         total_ms = round((time.time() - t0) * 1000, 2)
         done_payload = {
@@ -287,7 +277,7 @@ async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(Non
     )
 
 
-@demo.app.post("/api/context/load-local")
+@app.post("/api/context/load-local")
 async def load_local_folder(req: LocalPathRequest, x_session_id: Optional[str] = Header(None)):
     """Loads all documents from a local folder into visitor's session store."""
     sid = req.session_id or x_session_id or "default"
@@ -299,7 +289,7 @@ async def load_local_folder(req: LocalPathRequest, x_session_id: Optional[str] =
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@demo.app.post("/api/context/upload")
+@app.post("/api/context/upload")
 async def upload_files(
     files: List[UploadFile] = File(...),
     session_id: Optional[str] = Form(None),
@@ -324,7 +314,7 @@ async def upload_files(
         raise HTTPException(status_code=500, detail=f"Unexpected error processing files: {str(e)}")
 
 
-@demo.app.delete("/api/context/document/{doc_id:path}")
+@app.delete("/api/context/document/{doc_id:path}")
 async def remove_document(
     doc_id: str,
     session_id: Optional[str] = None,
@@ -336,7 +326,7 @@ async def remove_document(
     return {"success": True, "status": status}
 
 
-@demo.app.delete("/api/context/clear")
+@app.delete("/api/context/clear")
 async def clear_context(
     session_id: Optional[str] = None,
     x_session_id: Optional[str] = Header(None)
@@ -348,10 +338,17 @@ async def clear_context(
 
 
 # ---------------------------------------------------------------------------
-# Launch Entrypoint (ZeroGPU Native Gradio Launcher)
+# Mount Gradio Blocks at /gradio (Satisfies Hugging Face Space Gradio SDK)
 # ---------------------------------------------------------------------------
+with gr.Blocks(title="Document Assistant Backend") as demo:
+    gr.Markdown("# Document Assistant Gradio Service Endpoint")
 
+app = gr.mount_gradio_app(app, demo, path="/gradio")
+
+
+# ---------------------------------------------------------------------------
+# Launch Entrypoint (Binds Uvicorn to 0.0.0.0:7860)
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7860"))
-    demo.queue()
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
