@@ -13,7 +13,7 @@ pinned: false
 
 > A grounded document assistant built for internal knowledge retrieval. Features a custom GPT-2 architecture fine-tuned on SQuAD, paired with a hybrid sparse (BM25) + dense (FAISS) retrieval pipeline and real-time Server-Sent Events (SSE) token streaming.
 
-🔗 **Live Demo**: https://huggingface.co/spaces/XAEOZ/GPT2-RAG-document-assistant
+🔗 **Live Demo**: https://huggingface.co/spaces/XAEOZ/GPT2-RAG-Assistant
 
 ---
 
