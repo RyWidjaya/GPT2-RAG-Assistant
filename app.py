@@ -7,10 +7,9 @@ except ImportError:
 import os
 import torch
 import gradio as gr
-from fastapi import APIRouter
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
-from rag_server import app as fastapi_app, engine
+from rag_server import engine
 
 # ---------------------------------------------------------------------------
 # Backend Query & Generation Logic
@@ -241,13 +240,6 @@ def serve_custom_ui():
         with open(index_file, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse("<h1>Enterprise UI loading...</h1>", status_code=200)
-
-# Include only /api routes from fastapi_app (avoids root '/' collision with Gradio)
-api_router = APIRouter()
-for route in fastapi_app.router.routes:
-    if hasattr(route, "path") and route.path.startswith("/api"):
-        api_router.routes.append(route)
-demo.app.include_router(api_router)
 
 # ---------------------------------------------------------------------------
 # Server Entrypoint
