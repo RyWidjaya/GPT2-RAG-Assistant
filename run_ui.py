@@ -89,4 +89,11 @@ if __name__ == "__main__":
     threading.Thread(target=wait_and_open_browser, args=(url,), daemon=True).start()
 
     # Run Uvicorn directly with the initialized app
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    except (KeyboardInterrupt, SystemExit):
+        print("\n[*] Server stopped cleanly.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n[!] Server error: {e}", file=sys.stderr)
+        sys.exit(0)
