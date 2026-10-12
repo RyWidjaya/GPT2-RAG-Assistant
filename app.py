@@ -2,7 +2,15 @@
 try:
     import spaces
 except ImportError:
-    spaces = None
+    class MockSpaces:
+        @staticmethod
+        def GPU(func=None, duration=60):
+            if func is not None:
+                return func
+            def decorator(f):
+                return f
+            return decorator
+    spaces = MockSpaces()
 
 import os
 import sys
@@ -29,13 +37,10 @@ from rag_engine import RAGEngine
 # Global Engine instance
 engine = RAGEngine()
 
-# Wrap generation with ZeroGPU if running on Hugging Face Spaces with ZeroGPU
-if spaces is not None:
-    try:
-        engine.generate = spaces.GPU(duration=60)(engine.generate)
-        print("[+] ZeroGPU enabled for engine.generate")
-    except Exception as e:
-        print(f"[!] Warning wrapping engine.generate with spaces.GPU: {e}")
+# Explicit top-level @spaces.GPU function for ZeroGPU static detection & worker lifecycle
+@spaces.GPU(duration=60)
+def gpu_generate(model_name: str = "squad_ft", prompt: str = "", max_new_tokens: int = 48, temperature: float = 0.0):
+    yield from engine.generate(model_name=model_name, prompt=prompt, max_new_tokens=max_new_tokens, temperature=temperature)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
@@ -237,7 +242,7 @@ async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(Non
         t_gen_start = time.time()
         token_count = 0
         try:
-            for token in engine.generate(
+            for token in gpu_generate(
                 model_name=active_model,
                 prompt=prompt,
                 max_new_tokens=req.max_new_tokens or 48,
@@ -247,7 +252,7 @@ async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(Non
                 yield f"event: token\ndata: {json.dumps({'token': token})}\n\n"
                 await asyncio.sleep(0.005)
         except Exception as e:
-            print(f"[!] Generation error: {e}. Falling back to direct model execution...")
+            print(f"[!] ZeroGPU execution error: {e}. Falling back to standard CPU execution...")
             for token in engine.generate(
                 model_name=active_model,
                 prompt=prompt,
@@ -338,10 +343,14 @@ async def clear_context(
 
 
 # ---------------------------------------------------------------------------
-# Mount Gradio Blocks at /gradio (Satisfies Hugging Face Space Gradio SDK)
+# Mount Gradio Blocks at /gradio with event binding (Satisfies HF ZeroGPU)
 # ---------------------------------------------------------------------------
 with gr.Blocks(title="Document Assistant Backend") as demo:
     gr.Markdown("# Document Assistant Gradio Service Endpoint")
+    dummy_in = gr.Textbox(visible=False)
+    dummy_out = gr.Textbox(visible=False)
+    dummy_btn = gr.Button(visible=False)
+    dummy_btn.click(fn=gpu_generate, inputs=[dummy_in, dummy_in], outputs=[dummy_out])
 
 app = gr.mount_gradio_app(app, demo, path="/gradio")
 
