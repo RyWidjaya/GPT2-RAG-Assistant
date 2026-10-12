@@ -246,12 +246,40 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
-    """Serves the main application UI."""
+    """Serves the main application UI with anti-caching headers."""
     index_file = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_file):
         with open(index_file, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            content = f.read()
+        return HTMLResponse(
+            content=content,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return HTMLResponse("<h1>RAG UI loading... (static/index.html not found)</h1>", status_code=200)
+
+
+@app.get("/app.js")
+async def serve_root_app_js():
+    """Serves app.js directly from root with anti-caching headers."""
+    js_file = os.path.join(STATIC_DIR, "app.js")
+    if os.path.exists(js_file):
+        with open(js_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+    raise HTTPException(status_code=404, detail="app.js not found")
+
+
+@app.get("/style.css")
+async def serve_root_style_css():
+    """Serves style.css directly from root with anti-caching headers."""
+    css_file = os.path.join(STATIC_DIR, "style.css")
+    if os.path.exists(css_file):
+        with open(css_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), media_type="text/css", headers={"Cache-Control": "no-cache"})
+    raise HTTPException(status_code=404, detail="style.css not found")
 
 
 if __name__ == "__main__":
