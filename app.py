@@ -306,7 +306,7 @@ async def clear_context(
 
 
 def register_custom_routes(target_app):
-    """Registers identical application routes and APIs onto a FastAPI instance with absolute priority."""
+    """Registers identical application routes and APIs onto a FastAPI instance with full dependency injection."""
     try:
         target_app.add_middleware(
             CORSMiddleware,
@@ -318,31 +318,31 @@ def register_custom_routes(target_app):
     except Exception:
         pass
 
-    from starlette.routing import Route
+    def add_priority_route(path, endpoint, methods, response_class=None):
+        if response_class:
+            target_app.add_api_route(path, endpoint, methods=methods, response_class=response_class)
+        else:
+            target_app.add_api_route(path, endpoint, methods=methods)
+        if hasattr(target_app, "router") and hasattr(target_app.router, "routes") and target_app.router.routes:
+            new_r = target_app.router.routes.pop()
+            target_app.router.routes.insert(0, new_r)
 
-    custom_routes = [
-        Route("/", serve_app, methods=["GET"]),
-        Route("/app", serve_app, methods=["GET"]),
-        Route("/index.html", serve_app, methods=["GET"]),
-        Route("/style.css", serve_root_style, methods=["GET"]),
-        Route("/app.js", serve_root_app_js, methods=["GET"]),
-        Route("/api/status", get_status, methods=["GET"]),
-        Route("/api/model/switch", switch_model, methods=["POST"]),
-        Route("/api/chat", chat, methods=["POST"]),
-        Route("/api/chat/stream", chat_stream, methods=["POST"]),
-        Route("/api/context/load-local", load_local_folder, methods=["POST"]),
-        Route("/api/context/upload", upload_files, methods=["POST"]),
-        Route("/api/context/document/{doc_id:path}", remove_document, methods=["DELETE"]),
-        Route("/api/context/clear", clear_context, methods=["DELETE"]),
-    ]
+    # UI routes
+    add_priority_route("/", serve_app, methods=["GET"], response_class=HTMLResponse)
+    add_priority_route("/app", serve_app, methods=["GET"], response_class=HTMLResponse)
+    add_priority_route("/index.html", serve_app, methods=["GET"], response_class=HTMLResponse)
+    add_priority_route("/style.css", serve_root_style, methods=["GET"])
+    add_priority_route("/app.js", serve_root_app_js, methods=["GET"])
 
-    # Prepend custom routes so they evaluate BEFORE Gradio's generic wildcard / catch-all handlers
-    if hasattr(target_app, "router") and hasattr(target_app.router, "routes"):
-        for r in reversed(custom_routes):
-            target_app.router.routes.insert(0, r)
-    elif hasattr(target_app, "routes"):
-        for r in reversed(custom_routes):
-            target_app.routes.insert(0, r)
+    # API endpoints
+    add_priority_route("/api/status", get_status, methods=["GET"])
+    add_priority_route("/api/model/switch", switch_model, methods=["POST"])
+    add_priority_route("/api/chat", chat, methods=["POST"])
+    add_priority_route("/api/chat/stream", chat_stream, methods=["POST"])
+    add_priority_route("/api/context/load-local", load_local_folder, methods=["POST"])
+    add_priority_route("/api/context/upload", upload_files, methods=["POST"])
+    add_priority_route("/api/context/document/{doc_id:path}", remove_document, methods=["DELETE"])
+    add_priority_route("/api/context/clear", clear_context, methods=["DELETE"])
 
     try:
         target_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
