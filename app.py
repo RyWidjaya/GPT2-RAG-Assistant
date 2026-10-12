@@ -26,7 +26,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uvicorn
 
 # Ensure default Hugging Face model repository
 if "HF_MODEL_REPO" not in os.environ:
@@ -45,26 +44,11 @@ def gpu_generate(model_name: str = "squad_ft", prompt: str = "", max_new_tokens:
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+
 # ---------------------------------------------------------------------------
-# FastAPI Application (Acts as Root Server)
-# ---------------------------------------------------------------------------
-app = FastAPI(
-    title="Document Assistant GPT-2 RAG",
-    description="Full-featured Document Assistant with GPT-2 + Hybrid RAG",
-    version="1.1.0"
-)
-
-# Enable CORS for cross-origin and iframe embedding
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 # Pydantic Request Models
+# ---------------------------------------------------------------------------
+
 class ChatRequest(BaseModel):
     question: str
     method: Optional[str] = "hybrid"
@@ -85,13 +69,20 @@ class SwitchModelRequest(BaseModel):
     model: str
 
 
-def get_index_html_response() -> HTMLResponse:
+# ---------------------------------------------------------------------------
+# HTML Document Serving
+# ---------------------------------------------------------------------------
+
+def get_index_html_content() -> str:
     index_file = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_file):
         with open(index_file, "r", encoding="utf-8") as f:
-            content = f.read()
-    else:
-        content = "<h1>Document Assistant loading...</h1>"
+            return f.read()
+    return "<h1>Document Assistant loading...</h1>"
+
+
+def get_index_html_response() -> HTMLResponse:
+    content = get_index_html_content()
     return HTMLResponse(
         content=content,
         headers={
@@ -105,25 +96,13 @@ def get_index_html_response() -> HTMLResponse:
 
 
 # ---------------------------------------------------------------------------
-# Root UI Routes (Pure White Surface - Zero Gradio Widgets, Zero 404s)
+# API Route Handlers
 # ---------------------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_root():
-    return get_index_html_response()
-
-
-@app.get("/app", response_class=HTMLResponse)
 async def serve_app():
     return get_index_html_response()
 
 
-@app.get("/index.html", response_class=HTMLResponse)
-async def serve_index():
-    return get_index_html_response()
-
-
-@app.get("/style.css")
 async def serve_root_style():
     css_file = os.path.join(STATIC_DIR, "style.css")
     if os.path.exists(css_file):
@@ -136,7 +115,6 @@ async def serve_root_style():
     raise HTTPException(status_code=404, detail="style.css not found")
 
 
-@app.get("/app.js")
 async def serve_root_app_js():
     js_file = os.path.join(STATIC_DIR, "app.js")
     if os.path.exists(js_file):
@@ -149,21 +127,12 @@ async def serve_root_app_js():
     raise HTTPException(status_code=404, detail="app.js not found")
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-
-# ---------------------------------------------------------------------------
-# API Endpoints (Identical to Localhost Backend)
-# ---------------------------------------------------------------------------
-
-@app.get("/api/status")
 async def get_status(request: Request, x_session_id: Optional[str] = Header(None)):
     """Returns system status, active model, and visitor session inventory."""
     sid = x_session_id or request.query_params.get("session_id") or "default"
     return engine.get_status(session_id=sid)
 
 
-@app.post("/api/model/switch")
 async def switch_model(req: SwitchModelRequest):
     """Switch active model between squad_ft, gpt2_pretrained, and qwen2.5_instruct."""
     allowed = ["squad_ft", "gpt2_pretrained", "qwen2.5_instruct"]
@@ -175,7 +144,6 @@ async def switch_model(req: SwitchModelRequest):
     return {"success": True, "current_model": engine.current_model_name}
 
 
-@app.post("/api/chat")
 async def chat(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     """Synchronous chat response with full context and chunk metrics."""
     if not req.question.strip():
@@ -197,7 +165,6 @@ async def chat(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     return response
 
 
-@app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(None)):
     """Server-Sent Events (SSE) streaming for real-time typewriter generation."""
     if not req.question.strip():
@@ -282,7 +249,6 @@ async def chat_stream(req: ChatRequest, x_session_id: Optional[str] = Header(Non
     )
 
 
-@app.post("/api/context/load-local")
 async def load_local_folder(req: LocalPathRequest, x_session_id: Optional[str] = Header(None)):
     """Loads all documents from a local folder into visitor's session store."""
     sid = req.session_id or x_session_id or "default"
@@ -294,7 +260,6 @@ async def load_local_folder(req: LocalPathRequest, x_session_id: Optional[str] =
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/context/upload")
 async def upload_files(
     files: List[UploadFile] = File(...),
     session_id: Optional[str] = Form(None),
@@ -319,7 +284,6 @@ async def upload_files(
         raise HTTPException(status_code=500, detail=f"Unexpected error processing files: {str(e)}")
 
 
-@app.delete("/api/context/document/{doc_id:path}")
 async def remove_document(
     doc_id: str,
     session_id: Optional[str] = None,
@@ -331,7 +295,6 @@ async def remove_document(
     return {"success": True, "status": status}
 
 
-@app.delete("/api/context/clear")
 async def clear_context(
     session_id: Optional[str] = None,
     x_session_id: Optional[str] = Header(None)
@@ -342,22 +305,102 @@ async def clear_context(
     return {"success": True, "status": status}
 
 
+def register_custom_routes(target_app):
+    """Registers identical application routes and APIs onto a FastAPI instance."""
+    try:
+        target_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    except Exception:
+        pass
+
+    target_app.add_api_route("/app", serve_app, methods=["GET"], response_class=HTMLResponse)
+    target_app.add_api_route("/index.html", serve_app, methods=["GET"], response_class=HTMLResponse)
+    target_app.add_api_route("/style.css", serve_root_style, methods=["GET"])
+    target_app.add_api_route("/app.js", serve_root_app_js, methods=["GET"])
+
+    target_app.add_api_route("/api/status", get_status, methods=["GET"])
+    target_app.add_api_route("/api/model/switch", switch_model, methods=["POST"])
+    target_app.add_api_route("/api/chat", chat, methods=["POST"])
+    target_app.add_api_route("/api/chat/stream", chat_stream, methods=["POST"])
+    target_app.add_api_route("/api/context/load-local", load_local_folder, methods=["POST"])
+    target_app.add_api_route("/api/context/upload", upload_files, methods=["POST"])
+    target_app.add_api_route("/api/context/document/{doc_id:path}", remove_document, methods=["DELETE"])
+    target_app.add_api_route("/api/context/clear", clear_context, methods=["DELETE"])
+
+    try:
+        target_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
-# Mount Gradio Blocks at /gradio with event binding (Satisfies HF ZeroGPU)
+# Gradio Blocks Container (Renders Pure-White Full-Screen Surface)
 # ---------------------------------------------------------------------------
-with gr.Blocks(title="Document Assistant Backend") as demo:
-    gr.Markdown("# Document Assistant Gradio Service Endpoint")
+
+GRADIO_FULLSCREEN_CSS = """
+html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    overflow: hidden !important;
+    background: #f8f9fa !important;
+}
+.gradio-container {
+    max-width: 100vw !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: #f8f9fa !important;
+}
+footer, .gradio-container > footer {
+    display: none !important;
+}
+"""
+
+with gr.Blocks(title="Document Assistant — GPT-2 RAG", css=GRADIO_FULLSCREEN_CSS) as demo:
+    # Render the full-screen pure-white application iframe pointing to /app
+    gr.HTML(
+        """
+        <iframe
+            src="/app"
+            style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: none; margin: 0; padding: 0; z-index: 999999; background: #f8f9fa;"
+            title="Document Assistant"
+            allow="clipboard-write"
+        ></iframe>
+        """
+    )
+
+    # Hidden element wired to @spaces.GPU function so ZeroGPU validation discovers it
     dummy_in = gr.Textbox(visible=False)
     dummy_out = gr.Textbox(visible=False)
     dummy_btn = gr.Button(visible=False)
     dummy_btn.click(fn=gpu_generate, inputs=[dummy_in, dummy_in], outputs=[dummy_out])
 
-app = gr.mount_gradio_app(app, demo, path="/gradio")
+# Register routes on demo.app ahead of time
+register_custom_routes(demo.app)
 
 
 # ---------------------------------------------------------------------------
-# Launch Entrypoint (Binds Uvicorn to 0.0.0.0:7860)
+# Launch Entrypoint (ZeroGPU Native Gradio Launcher)
 # ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7860"))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    demo.queue()
+    server_app, local_url, share_url = demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        prevent_thread_lock=True
+    )
+    # Re-register routes on the running server_app returned by demo.launch()
+    register_custom_routes(server_app)
+    print(f"[+] Document Assistant LIVE at {local_url} with all API routes active!")
+    demo.block_thread()
