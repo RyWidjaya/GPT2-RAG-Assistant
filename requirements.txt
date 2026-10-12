@@ -12,3 +12,4 @@ huggingface-hub>=0.20.0,<0.26.0
 transformers>=4.30.0
 pymupdf>=1.23.0
 numpy>=1.24.0
+
