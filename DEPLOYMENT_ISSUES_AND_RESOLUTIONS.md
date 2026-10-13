@@ -163,3 +163,29 @@ All endpoints verified live against `https://xaeoz-gpt2-rag-assistant.hf.space`:
 | `/api/status` | `GET` | `200 OK` | `{"device":"cuda","chunk_count":22,...}` |
 | `/api/chat` | `POST` | `200 OK` | Synchronous QA with context metrics |
 | `/api/chat/stream` | `POST` | `200 OK` | Real-time typewriter SSE token streaming |
+| `/api/model/switch` | `POST` | `200 OK` | Seamless switching across all 3 models |
+
+---
+
+## 5. Issue 8: Qwen 2.5 Instruct Model Loading Failure
+
+### Symptoms
+When switching to or asking questions with `qwen2.5_instruct` on Hugging Face Spaces or localhost, the API returned `HTTP 500 {"detail": "Failed to load model qwen2.5_instruct"}` and the chat interface yielded `[Error: Could not load model 'qwen2.5_instruct']`.
+
+### Root Cause
+1. **Missing `accelerate` Dependency**: In `rag_engine.py`, `AutoModelForCausalLM.from_pretrained` was invoked with `low_cpu_mem_usage=True` and `device_map="auto"`. In Hugging Face `transformers`, both of these parameters require `accelerate`. Since `accelerate` was omitted from `requirements.txt`, transformers threw:
+   ```
+   ImportError: Using `low_cpu_mem_usage=True` or a `device_map` requires Accelerate: `pip install 'accelerate>=0.26.0'`
+   ```
+2. **CUDA Allocation Outside `@spaces.GPU`**: On Hugging Face ZeroGPU spaces, `torch.cuda.is_available()` returns `True`. Passing `device_map="auto"` caused the weights to be assigned directly to CUDA memory during `load_model()`. However, `load_model()` is executed on the FastAPI host process outside any `@spaces.GPU` context, violating ZeroGPU's execution boundary and triggering runtime errors.
+
+### Resolution
+1. **Added `accelerate>=0.26.0` to `requirements.txt`**: Ensures high-speed, sharded weight loading in the Hugging Face Space container.
+2. **Guarded Memory Optimizations in `rag_engine.py`**:
+   - Checked `is_accelerate_available()` before passing `low_cpu_mem_usage=True`, enabling graceful fallback on systems without `accelerate`.
+   - Removed `device_map="auto"` completely from `load_model()`. Model weights remain safely in host CPU RAM during initialization and model switching.
+3. **Scoped GPU Movement in `generate()`**:
+   - Model weights are dynamically transferred to GPU (`model.to("cuda")`) strictly inside the active `@spaces.GPU` execution context.
+   - Wrapped generator streaming in a `try ... finally:` block to cleanly transfer weights back to CPU and clear CUDA cache after generation completes.
+
+

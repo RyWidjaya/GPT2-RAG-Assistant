@@ -425,26 +425,34 @@ class RAGEngine:
 
         elif model_name == "qwen2.5_instruct":
             model_id = os.environ.get("INSTRUCT_MODEL_ID", "Qwen/Qwen2.5-1.5B-Instruct")
-            print(f"[*] Loading stronger local instruct model: {model_id}...")
+            print(f"[*] Loading stronger instruct model: {model_id}...")
             try:
                 from transformers import AutoModelForCausalLM, AutoTokenizer
+                from transformers.utils import is_accelerate_available
+
                 tokenizer = AutoTokenizer.from_pretrained(model_id)
                 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                load_kwargs = {"torch_dtype": dtype}
+                if is_accelerate_available():
+                    load_kwargs["low_cpu_mem_usage"] = True
+
+                # Load cleanly to host CPU RAM (device_map=None)
+                # 1. On Hugging Face ZeroGPU, load_model executes outside @spaces.GPU;
+                #    CUDA operations outside @spaces.GPU cause fatal ZeroGPU isolation errors.
+                # 2. On environments without accelerate, device_map="auto" raises an ImportError.
+                # The model is moved to CUDA dynamically inside @spaces.GPU during generate().
                 model = AutoModelForCausalLM.from_pretrained(
                     model_id,
-                    torch_dtype=dtype,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    low_cpu_mem_usage=True
+                    **load_kwargs
                 )
-                if not torch.cuda.is_available():
-                    model.to("cpu")
                 model.eval()
                 self.models["qwen2.5_instruct"] = (model, tokenizer)
                 self.current_model_name = "qwen2.5_instruct"
                 print(f"[+] Instruct model {model_id} loaded successfully!")
                 return True
             except Exception as e:
-                print(f"[!] Failed to load {model_id}: {e}")
+                import traceback
+                print(f"[!] Failed to load {model_id}: {e}\n{traceback.format_exc()}")
                 return False
 
         return False
@@ -625,9 +633,17 @@ class RAGEngine:
             thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
             thread.start()
 
-            for token in streamer:
-                yield token
-            thread.join()
+            try:
+                for token in streamer:
+                    yield token
+            finally:
+                thread.join()
+                if torch.cuda.is_available():
+                    try:
+                        model.to("cpu")
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
         else:
             # Custom GPT-2 architecture

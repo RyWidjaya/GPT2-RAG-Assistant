@@ -11,5 +11,7 @@ faiss-cpu>=1.7.4
 rank-bm25>=0.2.2
 huggingface-hub>=0.20.0,<0.26.0
 transformers>=4.30.0
+accelerate>=0.26.0
 pymupdf>=1.23.0
 numpy>=1.24.0
+
