@@ -403,10 +403,10 @@ class RAGEngine:
                     return False
 
             print(f"[*] Loading fine-tuned checkpoint from {self.checkpoint_path}...")
-            ckpt = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+            ckpt = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
             model = GPT(ckpt['config'])
             model.load_state_dict(ckpt['model'])
-            model.to(self.device)
+            model.to("cpu")
             model.eval()
             self.models["squad_ft"] = model
             self.current_model_name = "squad_ft"
@@ -415,13 +415,19 @@ class RAGEngine:
 
         elif model_name == "gpt2_pretrained":
             print("[*] Loading HuggingFace GPT-2 124M pretrained weights...")
-            model = GPT.from_pretrained("gpt2")
-            model.to(self.device)
-            model.eval()
-            self.models["gpt2_pretrained"] = model
-            self.current_model_name = "gpt2_pretrained"
-            print("[+] GPT-2 Pretrained weights loaded successfully!")
-            return True
+            try:
+                model = GPT.from_pretrained("gpt2")
+                model.to("cpu")
+                model.eval()
+                self.models["gpt2_pretrained"] = model
+                self.current_model_name = "gpt2_pretrained"
+                print("[+] GPT-2 Pretrained weights loaded successfully!")
+                return True
+            except Exception as e:
+                import traceback
+                print(f"[!] Failed to load GPT-2 pretrained weights: {e}\n{traceback.format_exc()}")
+                return False
+
 
         elif model_name == "qwen2.5_instruct":
             model_id = os.environ.get("INSTRUCT_MODEL_ID", "Qwen/Qwen2.5-1.5B-Instruct")
@@ -654,23 +660,31 @@ class RAGEngine:
             ids = self.enc.encode(prompt)
             idx = torch.tensor(ids, dtype=torch.long, device=curr_device).unsqueeze(0)
 
-            with torch.no_grad():
-                for _ in range(max_new_tokens):
-                    logits, _ = model(idx[:, -self.max_seq_len:])
-                    last_logits = logits[0, -1]
+            try:
+                with torch.no_grad():
+                    for _ in range(max_new_tokens):
+                        logits, _ = model(idx[:, -self.max_seq_len:])
+                        last_logits = logits[0, -1]
 
-                    if temperature > 0.05:
-                        probs = torch.softmax(last_logits / temperature, dim=-1)
-                        next_id = int(torch.multinomial(probs, num_samples=1).item())
-                    else:
-                        next_id = int(last_logits.argmax().item())
+                        if temperature > 0.05:
+                            probs = torch.softmax(last_logits / temperature, dim=-1)
+                            next_id = int(torch.multinomial(probs, num_samples=1).item())
+                        else:
+                            next_id = int(last_logits.argmax().item())
 
-                    if next_id == self.eos_id:
-                        break
+                        if next_id == self.eos_id:
+                            break
 
-                    token_str = self.enc.decode([next_id])
-                    yield token_str
-                    idx = torch.cat((idx, torch.tensor([[next_id]], device=idx.device)), dim=1)
+                        token_str = self.enc.decode([next_id])
+                        yield token_str
+                        idx = torch.cat((idx, torch.tensor([[next_id]], device=idx.device)), dim=1)
+            finally:
+                if torch.cuda.is_available():
+                    try:
+                        model.to("cpu")
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
     def generate_stream(
         self,
